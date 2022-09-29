@@ -188,6 +188,31 @@ func exercise4() {
 func exercise5() {
 	fmt.Println("=== Exercise 5: Building JSON ===\n")
 
+	env, _ := cel.NewEnv(
+		cel.Variable("now", cel.TimestampType),
+	)
+
+	ast := compile(env, `
+        {'sub': 'serviceAccount:delegate@acme.co',
+         'aud': 'my-project',
+         'iss': 'auth.acme.com:12350',
+         'iat': now,
+         'nbf': now,
+         'exp': now + duration('300s'),
+         'extra_claims': {
+             'group': 'admin'
+         }}`,
+		cel.MapType(cel.StringType, cel.DynType))
+
+	program, _ := env.Program(ast)
+	out, _, _ := eval(
+		program,
+		map[string]interface{}{
+			"now": &tpb.Timestamp{Seconds: time.Now().Unix()},
+		},
+	)
+	fmt.Printf("------ type conversion ------\n%v\n", valueToJSON(out))
+
 	fmt.Println()
 }
 
@@ -199,6 +224,46 @@ func exercise5() {
 func exercise6() {
 	fmt.Println("=== Exercise 6: Building Protos ===\n")
 
+	requestType := &rpcpb.AttributeContext_Request{}
+	env, _ := cel.NewEnv(
+		cel.Container("google.rpc.context.AttributeContext"),
+		cel.Types(requestType),
+		cel.Variable("jwt", cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable("now", cel.TimestampType),
+	)
+
+	ast := compile(
+		env, `
+    Request{
+        auth: Auth{
+            principal: jwt.iss + '/' + jwt.sub,
+            audiences: [jwt.aud],
+            presenter: 'azp' in jwt ? jwt.azp : "",
+            claims: jwt
+        },
+        time: now
+    }
+`,
+		cel.ObjectType("google.rpc.context.AttributeContext.Request"),
+	)
+	program, _ := env.Program(ast)
+
+	out, _, _ := eval(
+		program,
+		map[string]interface{}{
+			"jwt": map[string]interface{}{
+				"sub": "serviceAccount:delegate@acme.co",
+				"aud": "my-project",
+				"iss": "auth.acme.com:12350",
+				"extra_claims": map[string]string{
+					"group": "admin",
+				},
+			},
+			"now": time.Now(),
+		},
+	)
+	fmt.Printf("------ type unwrap ------\n%v\n", out)
+
 	fmt.Println()
 }
 
@@ -209,6 +274,37 @@ func exercise6() {
 // values containing only strings that end with '@acme.co`.
 func exercise7() {
 	fmt.Println("=== Exercise 7: Macros ===\n")
+
+	env, _ := cel.NewEnv(
+		//cel.ClearMacros(),
+		cel.Variable("jwt", cel.MapType(cel.StringType, cel.DynType)),
+	)
+	ast := compile(
+		env,
+		`jwt.extra_claims.exists(c, c.startsWith('group'))
+                && jwt.extra_claims
+                      .filter(c, c.startsWith('group'))
+                      .all(c, jwt.extra_claims[c]
+                                 .all(g, g.endsWith('@acme.co')))`,
+		cel.BoolType)
+
+	program, _ := env.Program(ast)
+
+	eval(
+		program,
+		map[string]interface{}{
+			"jwt": map[string]interface{}{
+				"sub": "serviceAccount:delegate@acme.co",
+				"aud": "my-project",
+				"iss": "auth.acme.com:12350",
+				"extra_claims": map[string][]string{
+					"group1": {"admin@acme.co", "analyst@acme.co"},
+					"labels": {"metadata", "prod", "pii"},
+					"groupN": {"forever@acme.co"},
+				},
+			},
+		},
+	)
 
 	fmt.Println()
 }
@@ -223,6 +319,18 @@ func exercise7() {
 // heterogeneous list and map literals.
 func exercise8() {
 	fmt.Println("=== Exercise 8: Tuning ===\n")
+
+	env, _ := cel.NewEnv(
+		cel.Variable("x", cel.IntType),
+		cel.Variable("y", cel.UintType),
+	)
+	ast := compile(env,
+		`x in [1, 2, 3, 4, 5] && type(y) == uint`,
+		cel.BoolType)
+
+	trueVars := map[string]interface{}{"x": int64(4), "y": uint64(2)}
+	program, _ := env.Program(ast, cel.EvalOptions(cel.OptOptimize), cel.EvalOptions(cel.OptExhaustiveEval))
+	eval(program, trueVars)
 
 	fmt.Println()
 }
