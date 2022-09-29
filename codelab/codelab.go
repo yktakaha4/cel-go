@@ -55,6 +55,29 @@ func main() {
 // Compile, eval, profit!
 func exercise1() {
 	fmt.Println("=== Exercise 1: Hello World ===\n")
+	env, err := cel.NewEnv()
+	if err != nil {
+		glog.Exitf("env error : %v", err)
+	}
+	ast, iss := env.Parse(`"Hello, World!"`)
+	if iss.Err() != nil {
+		glog.Exit(iss.Err())
+	}
+	checked, iss := env.Check(ast)
+	if iss.Err() != nil {
+		glog.Exit(iss.Err())
+	}
+	if !reflect.DeepEqual(checked.OutputType(), cel.StringType) {
+		glog.Exitf(
+			"Got %v, wanted %v output type",
+			checked.OutputType(), cel.StringType,
+		)
+	}
+	program, err := env.Program(checked)
+	if err != nil {
+		glog.Exitf("program error: %v", err)
+	}
+	eval(program, cel.NoVars())
 
 	fmt.Println()
 }
@@ -65,6 +88,21 @@ func exercise1() {
 // determine whether a specific auth claim is set.
 func exercise2() {
 	fmt.Println("=== Exercise 2: Variables ===\n")
+	env, err := cel.NewEnv(
+		cel.Types(&rpcpb.AttributeContext_Request{}),
+		cel.Variable(
+			"request",
+			cel.ObjectType("google.rpc.context.AttributeContext.Request"),
+		),
+	)
+	if err != nil {
+		glog.Exit(err)
+	}
+	ast := compile(env, `request.auth.claims.group == 'admin'`, cel.BoolType)
+	program, _ := env.Program(ast)
+
+	claims := map[string]string{"group": "admin"}
+	eval(program, request(auth("user:me@acme.co", claims), time.Now()))
 
 	fmt.Println()
 }
@@ -80,6 +118,22 @@ func exercise2() {
 // request a second time at midnight. Observe the difference in output.
 func exercise3() {
 	fmt.Println("=== Exercise 3: Logical AND/OR ===\n")
+	env, _ := cel.NewEnv(
+		cel.Types(&rpcpb.AttributeContext_Request{}),
+		cel.Variable(
+			"request",
+			cel.ObjectType("google.rpc.context.AttributeContext.Request"),
+		),
+	)
+
+	ast := compile(
+		env,
+		`request.auth.claims.group == 'admin' || request.auth.principal == 'user:me@acme.co'`,
+		cel.BoolType,
+	)
+	program, _ := env.Program(ast)
+	emptyClaims := map[string]string{}
+	eval(program, request(auth("other:me@acme.co", emptyClaims), time.Now()))
 
 	fmt.Println()
 }
@@ -90,6 +144,40 @@ func exercise3() {
 // indicating whether the map contains the key-value pair.
 func exercise4() {
 	fmt.Println("=== Exercise 4: Customization ===\n")
+	typeParamA := cel.TypeParamType("A")
+	typeParamB := cel.TypeParamType("B")
+	mapAB := cel.MapType(typeParamA, typeParamB)
+
+	env, _ := cel.NewEnv(
+		cel.Types(&rpcpb.AttributeContext_Request{}),
+		cel.Variable(
+			"request",
+			cel.ObjectType("google.rpc.context.AttributeContext.Request"),
+		),
+		cel.Function(
+			"contains",
+			cel.MemberOverload(
+				"map_contains_key_value",
+				[]*cel.Type{mapAB, typeParamA, typeParamB},
+				cel.BoolType,
+				cel.FunctionBinding(mapContainsKeyValue),
+			),
+		),
+	)
+	ast := compile(
+		env,
+		`request.auth.claims.contains('group', 'admin')`,
+		cel.BoolType,
+	)
+
+	program, _ := env.Program(ast)
+	emptyClaims := map[string]string{}
+	eval(
+		program,
+		request(auth("user:me@acme.co", emptyClaims), time.Now()),
+	)
+	claims := map[string]string{"group": "admin"}
+	eval(program, request(auth("user:me@acme.co", claims), time.Now()))
 
 	fmt.Println()
 }
